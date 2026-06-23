@@ -61,6 +61,7 @@ from src.services.search_pagination import (
     advance_search_page,
     is_search_results_response,
 )
+from src.domain.models.task import parse_keywords
 
 
 class RiskControlError(Exception):
@@ -448,6 +449,11 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
     根据单个任务配置，异步爬取闲鱼商品数据，并对每个新发现的商品进行实时的、独立的AI分析和通知。
     """
     keyword = task_config["keyword"]
+    keywords = parse_keywords(keyword)
+    if not keywords:
+        print("错误: 任务没有有效的搜索关键词，跳过执行。")
+        return 0
+    primary_keyword = keywords[0]  # Used for result filename and dedup grouping
     max_pages = task_config.get("max_pages", 1)
     personal_only = task_config.get("personal_only", False)
     min_price = task_config.get("min_price")
@@ -468,13 +474,15 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
     processed_links = set()
     history_run_id = datetime.now().strftime("%Y%m%d%H%M%S")
     history_seen_item_ids: set[str] = set()
-    historical_snapshots = load_price_snapshots(keyword)
-    result_filename = build_result_filename(keyword)
-    processed_links = load_processed_link_keys(keyword)
+    historical_snapshots = load_price_snapshots(primary_keyword)
+    result_filename = build_result_filename(primary_keyword)
+    processed_links = load_processed_link_keys(primary_keyword)
     if processed_links:
         print(f"LOG: 发现已存在结果集 {result_filename}，已加载 {len(processed_links)} 个历史商品用于去重。")
     else:
         print(f"LOG: 结果集 {result_filename} 当前为空，将写入新记录。")
+    if len(keywords) > 1:
+        print(f"LOG: 本次搜索包含 {len(keywords)} 个关键词: {', '.join(keywords)}")
 
     rotation_settings = _get_rotation_settings(task_config)
     account_items = load_state_files(rotation_settings["account_state_dir"])
@@ -648,500 +656,513 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                 await page.evaluate("window.scrollBy(0, Math.random() * 500 + 200)")
                 await random_sleep(1, 2)
 
-                log_time("步骤 1 - 导航到搜索结果页...")
-                # 使用 'q' 参数构建正确的搜索URL，并进行URL编码
-                params = {"q": keyword}
-                search_url = f"https://www.goofish.com/search?{urlencode(params)}"
-                log_time(f"目标URL: {search_url}")
+                # --- Keyword iteration: search each keyword sequentially ---
+                for kw_index, current_keyword in enumerate(keywords):
+                    if len(keywords) > 1:
+                        log_time(f"===== 搜索关键词 [{kw_index + 1}/{len(keywords)}]: {current_keyword} =====")
+                    else:
+                        log_time(f"===== 搜索关键词: {current_keyword} =====")
 
-                # 先监听搜索接口响应，再执行导航，避免错过首次请求
-                async with page.expect_response(
-                    is_search_results_response, timeout=30000
-                ) as initial_response_info:
-                    await page.goto(
-                        search_url, wait_until="domcontentloaded", timeout=60000
-                    )
-                if _is_login_url(page.url):
-                    raise LoginRequiredError(
-                        f"Login required: redirected to {page.url} (cookies/state likely expired)"
-                    )
+                    log_time("步骤 1 - 导航到搜索结果页...")
+                    # 使用 'q' 参数构建正确的搜索URL，并进行URL编码
+                    params = {"q": current_keyword}
+                    search_url = f"https://www.goofish.com/search?{urlencode(params)}"
+                    log_time(f"目标URL: {search_url}")
 
-                # 捕获初始搜索的API数据
-                initial_response = await initial_response_info.value
-
-                # 等待页面加载出关键筛选元素，以确认已成功进入搜索结果页
-                try:
-                    await page.wait_for_selector("text=新发布", timeout=15000)
-                except PlaywrightTimeoutError as e:
+                    # 先监听搜索接口响应，再执行导航，避免错过首次请求
+                    async with page.expect_response(
+                        is_search_results_response, timeout=30000
+                    ) as initial_response_info:
+                        await page.goto(
+                            search_url, wait_until="domcontentloaded", timeout=60000
+                        )
                     if _is_login_url(page.url):
                         raise LoginRequiredError(
                             f"Login required: redirected to {page.url} (cookies/state likely expired)"
-                        ) from e
-                    raise
-
-                # 模拟真实用户行为：页面加载后的初始停留和浏览
-                log_time("[反爬] 模拟用户查看页面...")
-                await random_sleep(1, 3)
-
-                # --- 新增：检查是否存在验证弹窗 ---
-                baxia_dialog = page.locator("div.baxia-dialog-mask")
-                middleware_widget = page.locator("div.J_MIDDLEWARE_FRAME_WIDGET")
-                try:
-                    # 等待弹窗在2秒内出现。如果出现，则执行块内代码。
-                    await baxia_dialog.wait_for(state="visible", timeout=2000)
-                    print(
-                        "\n==================== CRITICAL BLOCK DETECTED ===================="
-                    )
-                    print("检测到闲鱼反爬虫验证弹窗 (baxia-dialog)，无法继续操作。")
-                    print("这通常是因为操作过于频繁或被识别为机器人。")
-                    print("建议：")
-                    print("1. 停止脚本一段时间再试。")
-                    print(
-                        "2. (推荐) 在 .env 文件中设置 RUN_HEADLESS=false，以非无头模式运行，这有助于绕过检测。"
-                    )
-                    print(f"任务 '{keyword}' 将在此处中止。")
-                    print(
-                        "==================================================================="
-                    )
-                    raise RiskControlError("baxia-dialog")
-                except PlaywrightTimeoutError:
-                    # 2秒内弹窗未出现，这是正常情况，继续执行
-                    pass
-
-                # 检查是否有J_MIDDLEWARE_FRAME_WIDGET覆盖层
-                try:
-                    await middleware_widget.wait_for(state="visible", timeout=2000)
-                    print(
-                        "\n==================== CRITICAL BLOCK DETECTED ===================="
-                    )
-                    print(
-                        "检测到闲鱼反爬虫验证弹窗 (J_MIDDLEWARE_FRAME_WIDGET)，无法继续操作。"
-                    )
-                    print("这通常是因为操作过于频繁或被识别为机器人。")
-                    print("建议：")
-                    print("1. 停止脚本一段时间再试。")
-                    print("2. (推荐) 更新登录状态文件，确保登录状态有效。")
-                    print("3. 降低任务执行频率，避免被识别为机器人。")
-                    print(f"任务 '{keyword}' 将在此处中止。")
-                    print(
-                        "==================================================================="
-                    )
-                    raise RiskControlError("J_MIDDLEWARE_FRAME_WIDGET")
-                except PlaywrightTimeoutError:
-                    # 2秒内弹窗未出现，这是正常情况，继续执行
-                    pass
-                # --- 结束新增 ---
-
-                try:
-                    await page.click("div[class*='closeIconBg']", timeout=3000)
-                    print("LOG: 已关闭广告弹窗。")
-                except PlaywrightTimeoutError:
-                    print("LOG: 未检测到广告弹窗。")
-
-                final_response = None
-                log_time("步骤 2 - 应用筛选条件...")
-                if new_publish_option:
-                    try:
-                        await page.click("text=新发布")
-                        await random_sleep(1, 2)  # 原来是 (1.5, 2.5)
-                        async with page.expect_response(
-                            is_search_results_response, timeout=20000
-                        ) as response_info:
-                            await page.click(f"text={new_publish_option}")
-                            # --- 修改: 增加排序后的等待时间 ---
-                            await random_sleep(2, 4)  # 原来是 (3, 5)
-                        final_response = await response_info.value
-                    except PlaywrightTimeoutError:
-                        log_time(
-                            f"新发布筛选 '{new_publish_option}' 请求超时，继续执行。"
                         )
-                    except Exception as e:
-                        print(f"LOG: 应用新发布筛选失败: {e}")
 
-                if personal_only:
-                    async with page.expect_response(
-                        is_search_results_response, timeout=20000
-                    ) as response_info:
-                        await page.click("text=个人闲置")
-                        # --- 修改: 将固定等待改为随机等待，并加长 ---
-                        await random_sleep(2, 4)  # 原来是 asyncio.sleep(5)
-                    final_response = await response_info.value
+                    # 捕获初始搜索的API数据
+                    initial_response = await initial_response_info.value
 
-                if free_shipping:
+                    # 等待页面加载出关键筛选元素，以确认已成功进入搜索结果页
                     try:
+                        await page.wait_for_selector("text=新发布", timeout=15000)
+                    except PlaywrightTimeoutError as e:
+                        if _is_login_url(page.url):
+                            raise LoginRequiredError(
+                                f"Login required: redirected to {page.url} (cookies/state likely expired)"
+                            ) from e
+                        raise
+
+                    # 模拟真实用户行为：页面加载后的初始停留和浏览
+                    log_time("[反爬] 模拟用户查看页面...")
+                    await random_sleep(1, 3)
+
+                    # --- 新增：检查是否存在验证弹窗 ---
+                    baxia_dialog = page.locator("div.baxia-dialog-mask")
+                    middleware_widget = page.locator("div.J_MIDDLEWARE_FRAME_WIDGET")
+                    try:
+                        # 等待弹窗在2秒内出现。如果出现，则执行块内代码。
+                        await baxia_dialog.wait_for(state="visible", timeout=2000)
+                        print(
+                            "\n==================== CRITICAL BLOCK DETECTED ===================="
+                        )
+                        print("检测到闲鱼反爬虫验证弹窗 (baxia-dialog)，无法继续操作。")
+                        print("这通常是因为操作过于频繁或被识别为机器人。")
+                        print("建议：")
+                        print("1. 停止脚本一段时间再试。")
+                        print(
+                            "2. (推荐) 在 .env 文件中设置 RUN_HEADLESS=false，以非无头模式运行，这有助于绕过检测。"
+                        )
+                        print(f"任务 '{keyword}' 将在此处中止。")
+                        print(
+                            "==================================================================="
+                        )
+                        raise RiskControlError("baxia-dialog")
+                    except PlaywrightTimeoutError:
+                        # 2秒内弹窗未出现，这是正常情况，继续执行
+                        pass
+
+                    # 检查是否有J_MIDDLEWARE_FRAME_WIDGET覆盖层
+                    try:
+                        await middleware_widget.wait_for(state="visible", timeout=2000)
+                        print(
+                            "\n==================== CRITICAL BLOCK DETECTED ===================="
+                        )
+                        print(
+                            "检测到闲鱼反爬虫验证弹窗 (J_MIDDLEWARE_FRAME_WIDGET)，无法继续操作。"
+                        )
+                        print("这通常是因为操作过于频繁或被识别为机器人。")
+                        print("建议：")
+                        print("1. 停止脚本一段时间再试。")
+                        print("2. (推荐) 更新登录状态文件，确保登录状态有效。")
+                        print("3. 降低任务执行频率，避免被识别为机器人。")
+                        print(f"任务 '{keyword}' 将在此处中止。")
+                        print(
+                            "==================================================================="
+                        )
+                        raise RiskControlError("J_MIDDLEWARE_FRAME_WIDGET")
+                    except PlaywrightTimeoutError:
+                        # 2秒内弹窗未出现，这是正常情况，继续执行
+                        pass
+                    # --- 结束新增 ---
+
+                    try:
+                        await page.click("div[class*='closeIconBg']", timeout=3000)
+                        print("LOG: 已关闭广告弹窗。")
+                    except PlaywrightTimeoutError:
+                        print("LOG: 未检测到广告弹窗。")
+
+                    final_response = None
+                    log_time("步骤 2 - 应用筛选条件...")
+                    if new_publish_option:
+                        try:
+                            await page.click("text=新发布")
+                            await random_sleep(1, 2)  # 原来是 (1.5, 2.5)
+                            async with page.expect_response(
+                                is_search_results_response, timeout=20000
+                            ) as response_info:
+                                await page.click(f"text={new_publish_option}")
+                                # --- 修改: 增加排序后的等待时间 ---
+                                await random_sleep(2, 4)  # 原来是 (3, 5)
+                            final_response = await response_info.value
+                        except PlaywrightTimeoutError:
+                            log_time(
+                                f"新发布筛选 '{new_publish_option}' 请求超时，继续执行。"
+                            )
+                        except Exception as e:
+                            print(f"LOG: 应用新发布筛选失败: {e}")
+
+                    if personal_only:
                         async with page.expect_response(
                             is_search_results_response, timeout=20000
                         ) as response_info:
-                            await page.click("text=包邮")
-                            await random_sleep(2, 4)
-                        final_response = await response_info.value
-                    except PlaywrightTimeoutError:
-                        log_time("包邮筛选请求超时，继续执行。")
-                    except Exception as e:
-                        print(f"LOG: 应用包邮筛选失败: {e}")
-
-                if region_filter:
-                    try:
-                        area_trigger = page.get_by_text("区域", exact=True)
-                        if await area_trigger.count():
-                            await area_trigger.first.click()
-                            await random_sleep(1.5, 2)
-                            popover_candidates = page.locator("div.ant-popover")
-                            popover = popover_candidates.filter(
-                                has=page.locator(
-                                    ".areaWrap--FaZHsn8E, [class*='areaWrap']"
-                                )
-                            ).last
-                            if not await popover.count():
-                                popover = popover_candidates.filter(
-                                    has=page.get_by_text("重新定位")
-                                ).last
-                            if not await popover.count():
-                                popover = popover_candidates.filter(
-                                    has=page.get_by_text("查看")
-                                ).last
-                            if not await popover.count():
-                                print("LOG: 未找到区域弹窗，跳过区域筛选。")
-                                raise PlaywrightTimeoutError("region-popover-not-found")
-                            await popover.wait_for(state="visible", timeout=5000)
-
-                            # 列表容器：第一层 children 即省/市/区三列，不再强依赖具体类名，提升鲁棒性
-                            area_wrap = popover.locator(
-                                ".areaWrap--FaZHsn8E, [class*='areaWrap']"
-                            ).first
-                            await area_wrap.wait_for(state="visible", timeout=3000)
-                            columns = area_wrap.locator(":scope > div")
-                            col_prov = columns.nth(0)
-                            col_city = columns.nth(1)
-                            col_dist = columns.nth(2)
-
-                            region_parts = [
-                                p.strip() for p in region_filter.split("/") if p.strip()
-                            ]
-
-                            async def _click_in_column(
-                                column_locator, text_value: str, desc: str
-                            ) -> None:
-                                option = column_locator.locator(
-                                    ".provItem--QAdOx8nD", has_text=text_value
-                                ).first
-                                if await option.count():
-                                    await option.click()
-                                    await random_sleep(1.5, 2)
-                                    try:
-                                        await option.wait_for(
-                                            state="attached", timeout=1500
-                                        )
-                                        await option.wait_for(
-                                            state="visible", timeout=1500
-                                        )
-                                    except PlaywrightTimeoutError:
-                                        pass
-                                else:
-                                    print(f"LOG: 未找到{desc} '{text_value}'，跳过。")
-
-                            if len(region_parts) >= 1:
-                                await _click_in_column(
-                                    col_prov, region_parts[0], "省份"
-                                )
-                                await random_sleep(1, 2)
-                            if len(region_parts) >= 2:
-                                await _click_in_column(
-                                    col_city, region_parts[1], "城市"
-                                )
-                                await random_sleep(1, 2)
-                            if len(region_parts) >= 3:
-                                await _click_in_column(
-                                    col_dist, region_parts[2], "区/县"
-                                )
-                                await random_sleep(1, 2)
-
-                            search_btn = popover.locator(
-                                "div.searchBtn--Ic6RKcAb"
-                            ).first
-                            if await search_btn.count():
-                                try:
-                                    async with page.expect_response(
-                                        is_search_results_response,
-                                        timeout=20000,
-                                    ) as response_info:
-                                        await search_btn.click()
-                                        await random_sleep(2, 3)
-                                    final_response = await response_info.value
-                                except PlaywrightTimeoutError:
-                                    log_time("区域筛选提交超时，继续执行。")
-                            else:
-                                print(
-                                    "LOG: 未找到区域弹窗的“查看XX件宝贝”按钮，跳过提交。"
-                                )
-                        else:
-                            print("LOG: 未找到区域筛选触发器。")
-                    except PlaywrightTimeoutError:
-                        log_time(f"区域筛选 '{region_filter}' 请求超时，继续执行。")
-                    except Exception as e:
-                        print(f"LOG: 应用区域筛选 '{region_filter}' 失败: {e}")
-
-                if min_price or max_price:
-                    price_container = page.locator(
-                        'div[class*="search-price-input-container"]'
-                    ).first
-                    if await price_container.is_visible():
-                        if min_price:
-                            await price_container.get_by_placeholder("¥").first.fill(
-                                min_price
-                            )
-                            # --- 修改: 将固定等待改为随机等待 ---
-                            await random_sleep(1, 2.5)  # 原来是 asyncio.sleep(5)
-                        if max_price:
-                            await (
-                                price_container.get_by_placeholder("¥")
-                                .nth(1)
-                                .fill(max_price)
-                            )
-                            # --- 修改: 将固定等待改为随机等待 ---
-                            await random_sleep(1, 2.5)  # 原来是 asyncio.sleep(5)
-
-                        async with page.expect_response(
-                            is_search_results_response, timeout=20000
-                        ) as response_info:
-                            await page.keyboard.press("Tab")
-                            # --- 修改: 增加确认价格后的等待时间 ---
+                            await page.click("text=个人闲置")
+                            # --- 修改: 将固定等待改为随机等待，并加长 ---
                             await random_sleep(2, 4)  # 原来是 asyncio.sleep(5)
                         final_response = await response_info.value
-                    else:
-                        print("LOG: 警告 - 未找到价格输入容器。")
 
-                log_time("所有筛选已完成，开始处理商品列表...")
+                    if free_shipping:
+                        try:
+                            async with page.expect_response(
+                                is_search_results_response, timeout=20000
+                            ) as response_info:
+                                await page.click("text=包邮")
+                                await random_sleep(2, 4)
+                            final_response = await response_info.value
+                        except PlaywrightTimeoutError:
+                            log_time("包邮筛选请求超时，继续执行。")
+                        except Exception as e:
+                            print(f"LOG: 应用包邮筛选失败: {e}")
 
-                current_response = (
-                    final_response
-                    if final_response and final_response.ok
-                    else initial_response
-                )
-                for page_num in range(1, max_pages + 1):
-                    if stop_scraping:
-                        break
-                    log_time(f"开始处理第 {page_num}/{max_pages} 页 ...")
+                    if region_filter:
+                        try:
+                            area_trigger = page.get_by_text("区域", exact=True)
+                            if await area_trigger.count():
+                                await area_trigger.first.click()
+                                await random_sleep(1.5, 2)
+                                popover_candidates = page.locator("div.ant-popover")
+                                popover = popover_candidates.filter(
+                                    has=page.locator(
+                                        ".areaWrap--FaZHsn8E, [class*='areaWrap']"
+                                    )
+                                ).last
+                                if not await popover.count():
+                                    popover = popover_candidates.filter(
+                                        has=page.get_by_text("重新定位")
+                                    ).last
+                                if not await popover.count():
+                                    popover = popover_candidates.filter(
+                                        has=page.get_by_text("查看")
+                                    ).last
+                                if not await popover.count():
+                                    print("LOG: 未找到区域弹窗，跳过区域筛选。")
+                                    raise PlaywrightTimeoutError("region-popover-not-found")
+                                await popover.wait_for(state="visible", timeout=5000)
 
-                    if page_num > 1:
-                        page_advance_result = await advance_search_page(
-                            page=page,
-                            page_num=page_num,
-                        )
-                        if not page_advance_result.advanced:
-                            break
-                        current_response = page_advance_result.response
+                                # 列表容器：第一层 children 即省/市/区三列，不再强依赖具体类名，提升鲁棒性
+                                area_wrap = popover.locator(
+                                    ".areaWrap--FaZHsn8E, [class*='areaWrap']"
+                                ).first
+                                await area_wrap.wait_for(state="visible", timeout=3000)
+                                columns = area_wrap.locator(":scope > div")
+                                col_prov = columns.nth(0)
+                                col_city = columns.nth(1)
+                                col_dist = columns.nth(2)
 
-                    if not (current_response and current_response.ok):
-                        log_time(f"第 {page_num} 页响应无效，跳过。")
-                        continue
+                                region_parts = [
+                                    p.strip() for p in region_filter.split("/") if p.strip()
+                                ]
 
-                    basic_items = await _parse_search_results_json(
-                        await current_response.json(), f"第 {page_num} 页"
+                                async def _click_in_column(
+                                    column_locator, text_value: str, desc: str
+                                ) -> None:
+                                    option = column_locator.locator(
+                                        ".provItem--QAdOx8nD", has_text=text_value
+                                    ).first
+                                    if await option.count():
+                                        await option.click()
+                                        await random_sleep(1.5, 2)
+                                        try:
+                                            await option.wait_for(
+                                                state="attached", timeout=1500
+                                            )
+                                            await option.wait_for(
+                                                state="visible", timeout=1500
+                                            )
+                                        except PlaywrightTimeoutError:
+                                            pass
+                                    else:
+                                        print(f"LOG: 未找到{desc} '{text_value}'，跳过。")
+
+                                if len(region_parts) >= 1:
+                                    await _click_in_column(
+                                        col_prov, region_parts[0], "省份"
+                                    )
+                                    await random_sleep(1, 2)
+                                if len(region_parts) >= 2:
+                                    await _click_in_column(
+                                        col_city, region_parts[1], "城市"
+                                    )
+                                    await random_sleep(1, 2)
+                                if len(region_parts) >= 3:
+                                    await _click_in_column(
+                                        col_dist, region_parts[2], "区/县"
+                                    )
+                                    await random_sleep(1, 2)
+
+                                search_btn = popover.locator(
+                                    "div.searchBtn--Ic6RKcAb"
+                                ).first
+                                if await search_btn.count():
+                                    try:
+                                        async with page.expect_response(
+                                            is_search_results_response,
+                                            timeout=20000,
+                                        ) as response_info:
+                                            await search_btn.click()
+                                            await random_sleep(2, 3)
+                                        final_response = await response_info.value
+                                    except PlaywrightTimeoutError:
+                                        log_time("区域筛选提交超时，继续执行。")
+                                else:
+                                    print(
+                                        "LOG: 未找到区域弹窗的“查看XX件宝贝”按钮，跳过提交。"
+                                    )
+                            else:
+                                print("LOG: 未找到区域筛选触发器。")
+                        except PlaywrightTimeoutError:
+                            log_time(f"区域筛选 '{region_filter}' 请求超时，继续执行。")
+                        except Exception as e:
+                            print(f"LOG: 应用区域筛选 '{region_filter}' 失败: {e}")
+
+                    if min_price or max_price:
+                        price_container = page.locator(
+                            'div[class*="search-price-input-container"]'
+                        ).first
+                        if await price_container.is_visible():
+                            if min_price:
+                                await price_container.get_by_placeholder("¥").first.fill(
+                                    min_price
+                                )
+                                # --- 修改: 将固定等待改为随机等待 ---
+                                await random_sleep(1, 2.5)  # 原来是 asyncio.sleep(5)
+                            if max_price:
+                                await (
+                                    price_container.get_by_placeholder("¥")
+                                    .nth(1)
+                                    .fill(max_price)
+                                )
+                                # --- 修改: 将固定等待改为随机等待 ---
+                                await random_sleep(1, 2.5)  # 原来是 asyncio.sleep(5)
+
+                            async with page.expect_response(
+                                is_search_results_response, timeout=20000
+                            ) as response_info:
+                                await page.keyboard.press("Tab")
+                                # --- 修改: 增加确认价格后的等待时间 ---
+                                await random_sleep(2, 4)  # 原来是 asyncio.sleep(5)
+                            final_response = await response_info.value
+                        else:
+                            print("LOG: 警告 - 未找到价格输入容器。")
+
+                    log_time("所有筛选已完成，开始处理商品列表...")
+
+                    current_response = (
+                        final_response
+                        if final_response and final_response.ok
+                        else initial_response
                     )
-                    if not basic_items:
-                        break
-                    historical_snapshots.extend(
-                        record_market_snapshots(
-                            keyword=keyword,
-                            task_name=task_config.get("task_name", "Untitled Task"),
-                            items=basic_items,
-                            run_id=history_run_id,
-                            snapshot_time=datetime.now().isoformat(),
-                            seen_item_ids=history_seen_item_ids,
-                        )
-                    )
-
-                    total_items_on_page = len(basic_items)
-                    for i, item_data in enumerate(basic_items, 1):
-                        if debug_limit > 0 and processed_item_count >= debug_limit:
-                            log_time(
-                                f"已达到调试上限 ({debug_limit})，停止获取新商品。"
-                            )
-                            stop_scraping = True
+                    for page_num in range(1, max_pages + 1):
+                        if stop_scraping:
                             break
+                        log_time(f"开始处理第 {page_num}/{max_pages} 页 ...")
 
-                        unique_key = get_link_unique_key(item_data["商品链接"])
-                        if unique_key in processed_links:
-                            log_time(
-                                f"[页内进度 {i}/{total_items_on_page}] 商品 '{item_data['商品标题'][:20]}...' 已存在，跳过。"
+                        if page_num > 1:
+                            page_advance_result = await advance_search_page(
+                                page=page,
+                                page_num=page_num,
                             )
+                            if not page_advance_result.advanced:
+                                break
+                            current_response = page_advance_result.response
+
+                        if not (current_response and current_response.ok):
+                            log_time(f"第 {page_num} 页响应无效，跳过。")
                             continue
 
-                        log_time(
-                            f"[页内进度 {i}/{total_items_on_page}] 发现新商品，获取详情: {item_data['商品标题'][:30]}..."
+                        basic_items = await _parse_search_results_json(
+                            await current_response.json(), f"第 {page_num} 页"
                         )
-                        # --- 修改: 访问详情页前的等待时间，模拟用户在列表页上看了一会儿 ---
-                        await random_sleep(2, 4)  # 原来是 (2, 4)
+                        if not basic_items:
+                            break
+                        historical_snapshots.extend(
+                            record_market_snapshots(
+                                keyword=current_keyword,
+                                task_name=task_config.get("task_name", "Untitled Task"),
+                                items=basic_items,
+                                run_id=history_run_id,
+                                snapshot_time=datetime.now().isoformat(),
+                                seen_item_ids=history_seen_item_ids,
+                            )
+                        )
 
-                        detail_page = await context.new_page()
-                        try:
-                            async with detail_page.expect_response(
-                                lambda r: DETAIL_API_URL_PATTERN in r.url, timeout=25000
-                            ) as detail_info:
-                                await detail_page.goto(
-                                    item_data["商品链接"],
-                                    wait_until="domcontentloaded",
-                                    timeout=25000,
+                        total_items_on_page = len(basic_items)
+                        for i, item_data in enumerate(basic_items, 1):
+                            if debug_limit > 0 and processed_item_count >= debug_limit:
+                                log_time(
+                                    f"已达到调试上限 ({debug_limit})，停止获取新商品。"
                                 )
+                                stop_scraping = True
+                                break
 
-                            detail_response = await detail_info.value
-                            if detail_response.ok:
-                                detail_json = await detail_response.json()
-
-                                ret_string = str(
-                                    await safe_get(detail_json, "ret", default=[])
+                            unique_key = get_link_unique_key(item_data["商品链接"])
+                            if unique_key in processed_links:
+                                log_time(
+                                    f"[页内进度 {i}/{total_items_on_page}] 商品 '{item_data['商品标题'][:20]}...' 已存在，跳过。"
                                 )
-                                if "FAIL_SYS_USER_VALIDATE" in ret_string:
-                                    print(
-                                        "\n==================== CRITICAL BLOCK DETECTED ===================="
+                                continue
+
+                            log_time(
+                                f"[页内进度 {i}/{total_items_on_page}] 发现新商品，获取详情: {item_data['商品标题'][:30]}..."
+                            )
+                            # --- 修改: 访问详情页前的等待时间，模拟用户在列表页上看了一会儿 ---
+                            await random_sleep(2, 4)  # 原来是 (2, 4)
+
+                            detail_page = await context.new_page()
+                            try:
+                                async with detail_page.expect_response(
+                                    lambda r: DETAIL_API_URL_PATTERN in r.url, timeout=25000
+                                ) as detail_info:
+                                    await detail_page.goto(
+                                        item_data["商品链接"],
+                                        wait_until="domcontentloaded",
+                                        timeout=25000,
                                     )
-                                    print(
-                                        "检测到闲鱼反爬虫验证 (FAIL_SYS_USER_VALIDATE)，程序将终止。"
+
+                                detail_response = await detail_info.value
+                                if detail_response.ok:
+                                    detail_json = await detail_response.json()
+
+                                    ret_string = str(
+                                        await safe_get(detail_json, "ret", default=[])
                                     )
-                                    long_sleep_duration = random.randint(3, 60)
-                                    print(
-                                        f"为避免账户风险，将执行一次长时间休眠 ({long_sleep_duration} 秒) 后再退出..."
+                                    if "FAIL_SYS_USER_VALIDATE" in ret_string:
+                                        print(
+                                            "\n==================== CRITICAL BLOCK DETECTED ===================="
+                                        )
+                                        print(
+                                            "检测到闲鱼反爬虫验证 (FAIL_SYS_USER_VALIDATE)，程序将终止。"
+                                        )
+                                        long_sleep_duration = random.randint(3, 60)
+                                        print(
+                                            f"为避免账户风险，将执行一次长时间休眠 ({long_sleep_duration} 秒) 后再退出..."
+                                        )
+                                        await asyncio.sleep(long_sleep_duration)
+                                        print("长时间休眠结束，现在将安全退出。")
+                                        print(
+                                            "==================================================================="
+                                        )
+                                        raise RiskControlError("FAIL_SYS_USER_VALIDATE")
+
+                                    # 解析商品详情数据并更新 item_data
+                                    item_do = await safe_get(
+                                        detail_json, "data", "itemDO", default={}
                                     )
-                                    await asyncio.sleep(long_sleep_duration)
-                                    print("长时间休眠结束，现在将安全退出。")
-                                    print(
-                                        "==================================================================="
+                                    seller_do = await safe_get(
+                                        detail_json, "data", "sellerDO", default={}
                                     )
-                                    raise RiskControlError("FAIL_SYS_USER_VALIDATE")
 
-                                # 解析商品详情数据并更新 item_data
-                                item_do = await safe_get(
-                                    detail_json, "data", "itemDO", default={}
-                                )
-                                seller_do = await safe_get(
-                                    detail_json, "data", "sellerDO", default={}
-                                )
+                                    reg_days_raw = await safe_get(
+                                        seller_do, "userRegDay", default=0
+                                    )
+                                    registration_duration_text = format_registration_days(
+                                        reg_days_raw
+                                    )
 
-                                reg_days_raw = await safe_get(
-                                    seller_do, "userRegDay", default=0
-                                )
-                                registration_duration_text = format_registration_days(
-                                    reg_days_raw
-                                )
+                                    # --- START: 新增代码块 ---
 
-                                # --- START: 新增代码块 ---
+                                    # 1. 提取卖家的芝麻信用信息
+                                    zhima_credit_text = await safe_get(
+                                        seller_do, "zhimaLevelInfo", "levelName"
+                                    )
 
-                                # 1. 提取卖家的芝麻信用信息
-                                zhima_credit_text = await safe_get(
-                                    seller_do, "zhimaLevelInfo", "levelName"
-                                )
+                                    # 2. 提取该商品的完整图片列表
+                                    image_infos = await safe_get(
+                                        item_do, "imageInfos", default=[]
+                                    )
+                                    if image_infos:
+                                        # 使用列表推导式获取所有有效的图片URL
+                                        all_image_urls = [
+                                            img.get("url")
+                                            for img in image_infos
+                                            if img.get("url")
+                                        ]
+                                        if all_image_urls:
+                                            # 用新的字段存储图片列表，替换掉旧的单个链接
+                                            item_data["商品图片列表"] = all_image_urls
+                                            # (可选) 仍然保留主图链接，以防万一
+                                            item_data["商品主图链接"] = all_image_urls[0]
 
-                                # 2. 提取该商品的完整图片列表
-                                image_infos = await safe_get(
-                                    item_do, "imageInfos", default=[]
-                                )
-                                if image_infos:
-                                    # 使用列表推导式获取所有有效的图片URL
-                                    all_image_urls = [
-                                        img.get("url")
-                                        for img in image_infos
-                                        if img.get("url")
-                                    ]
-                                    if all_image_urls:
-                                        # 用新的字段存储图片列表，替换掉旧的单个链接
-                                        item_data["商品图片列表"] = all_image_urls
-                                        # (可选) 仍然保留主图链接，以防万一
-                                        item_data["商品主图链接"] = all_image_urls[0]
+                                    # --- END: 新增代码块 ---
+                                    item_data["“想要”人数"] = await safe_get(
+                                        item_do,
+                                        "wantCnt",
+                                        default=item_data.get("“想要”人数", "NaN"),
+                                    )
+                                    item_data["浏览量"] = await safe_get(
+                                        item_do, "browseCnt", default="-"
+                                    )
+                                    # ...[此处可添加更多从详情页解析出的商品信息]...
 
-                                # --- END: 新增代码块 ---
-                                item_data["“想要”人数"] = await safe_get(
-                                    item_do,
-                                    "wantCnt",
-                                    default=item_data.get("“想要”人数", "NaN"),
-                                )
-                                item_data["浏览量"] = await safe_get(
-                                    item_do, "browseCnt", default="-"
-                                )
-                                # ...[此处可添加更多从详情页解析出的商品信息]...
+                                    user_id = await safe_get(seller_do, "sellerId")
 
-                                user_id = await safe_get(seller_do, "sellerId")
-
-                                # 构建基础记录
-                                final_record = {
-                                    "爬取时间": datetime.now().isoformat(),
-                                    "搜索关键字": keyword,
-                                    "任务名称": task_config.get(
-                                        "task_name", "Untitled Task"
-                                    ),
-                                    "商品信息": item_data,
-                                    "卖家信息": {},
-                                }
-                                price_reference = build_market_reference(
-                                    keyword=keyword,
-                                    item=item_data,
-                                    current_market_items=basic_items,
-                                    historical_snapshots=historical_snapshots,
-                                )
-                                final_record["价格参考"] = price_reference
-                                final_record["price_insight"] = price_reference.get(
-                                    "本商品价格位置", {}
-                                )
-
-                                analysis_dispatcher.submit(
-                                    ItemAnalysisJob(
-                                        keyword=keyword,
-                                        task_name=task_config.get(
+                                    # 构建基础记录
+                                    final_record = {
+                                        "爬取时间": datetime.now().isoformat(),
+                                        "搜索关键字": current_keyword,
+                                        "任务名称": task_config.get(
                                             "task_name", "Untitled Task"
                                         ),
-                                        decision_mode=decision_mode,
-                                        analyze_images=analyze_images,
-                                        prompt_text=ai_prompt_text,
-                                        keyword_rules=tuple(keyword_rules or []),
-                                        final_record=final_record,
-                                        seller_id=str(user_id) if user_id else None,
-                                        zhima_credit_text=zhima_credit_text,
-                                        registration_duration_text=registration_duration_text,
+                                        "商品信息": item_data,
+                                        "卖家信息": {},
+                                    }
+                                    price_reference = build_market_reference(
+                                        keyword=current_keyword,
+                                        item=item_data,
+                                        current_market_items=basic_items,
+                                        historical_snapshots=historical_snapshots,
                                     )
-                                )
+                                    final_record["价格参考"] = price_reference
+                                    final_record["price_insight"] = price_reference.get(
+                                        "本商品价格位置", {}
+                                    )
 
-                                processed_links.add(unique_key)
-                                processed_item_count += 1
-                                log_time(
-                                    f"商品已提交后台分析。累计处理 {processed_item_count} 个新商品。"
-                                )
+                                    analysis_dispatcher.submit(
+                                        ItemAnalysisJob(
+                                            keyword=current_keyword,
+                                            task_name=task_config.get(
+                                                "task_name", "Untitled Task"
+                                            ),
+                                            decision_mode=decision_mode,
+                                            analyze_images=analyze_images,
+                                            prompt_text=ai_prompt_text,
+                                            keyword_rules=tuple(keyword_rules or []),
+                                            final_record=final_record,
+                                            seller_id=str(user_id) if user_id else None,
+                                            zhima_credit_text=zhima_credit_text,
+                                            registration_duration_text=registration_duration_text,
+                                        )
+                                    )
 
-                                # --- 修改: 增加单个商品处理后的主要延迟 ---
-                                log_time(
-                                    "[反爬] 执行一次主要的随机延迟以模拟用户浏览间隔..."
-                                )
-                                await random_sleep(5, 10)
-                            else:
-                                print(
-                                    f"   错误: 获取商品详情API响应失败，状态码: {detail_response.status}"
-                                )
-                                if AI_DEBUG_MODE:
+                                    processed_links.add(unique_key)
+                                    processed_item_count += 1
+                                    log_time(
+                                        f"商品已提交后台分析。累计处理 {processed_item_count} 个新商品。"
+                                    )
+
+                                    # --- 修改: 增加单个商品处理后的主要延迟 ---
+                                    log_time(
+                                        "[反爬] 执行一次主要的随机延迟以模拟用户浏览间隔..."
+                                    )
+                                    await random_sleep(5, 10)
+                                else:
                                     print(
-                                        f"--- [DETAIL DEBUG] FAILED RESPONSE from {item_data['商品链接']} ---"
+                                        f"   错误: 获取商品详情API响应失败，状态码: {detail_response.status}"
                                     )
-                                    try:
-                                        print(await detail_response.text())
-                                    except Exception as e:
-                                        print(f"无法读取响应内容: {e}")
-                                    print(
-                                        "----------------------------------------------------"
-                                    )
+                                    if AI_DEBUG_MODE:
+                                        print(
+                                            f"--- [DETAIL DEBUG] FAILED RESPONSE from {item_data['商品链接']} ---"
+                                        )
+                                        try:
+                                            print(await detail_response.text())
+                                        except Exception as e:
+                                            print(f"无法读取响应内容: {e}")
+                                        print(
+                                            "----------------------------------------------------"
+                                        )
 
-                        except PlaywrightTimeoutError:
-                            print(f"   错误: 访问商品详情页或等待API响应超时。")
-                        except Exception as e:
-                            print(f"   错误: 处理商品详情时发生未知错误: {e}")
-                        finally:
-                            await detail_page.close()
-                            # --- 修改: 增加关闭页面后的短暂整理时间 ---
-                            await random_sleep(2, 4)  # 原来是 (1, 2.5)
+                            except PlaywrightTimeoutError:
+                                print(f"   错误: 访问商品详情页或等待API响应超时。")
+                            except Exception as e:
+                                print(f"   错误: 处理商品详情时发生未知错误: {e}")
+                            finally:
+                                await detail_page.close()
+                                # --- 修改: 增加关闭页面后的短暂整理时间 ---
+                                await random_sleep(2, 4)  # 原来是 (1, 2.5)
 
-                    # --- 新增: 在处理完一页所有商品后，翻页前，增加一个更长的“休息”时间 ---
-                    if not stop_scraping and page_num < max_pages:
-                        print(
-                            f"--- 第 {page_num} 页处理完毕，准备翻页。执行一次页面间的长时休息... ---"
-                        )
-                        await random_sleep(10, 15)
+                        # --- 新增: 在处理完一页所有商品后，翻页前，增加一个更长的"休息"时间 ---
+                        if not stop_scraping and page_num < max_pages:
+                            print(
+                                f"--- 第 {page_num} 页处理完毕，准备翻页。执行一次页面间的长时休息... ---"
+                            )
+                            await random_sleep(10, 15)
+
+                    # --- End of pagination loop for current keyword ---
+                    # Add anti-crawl delay between keywords (skip after the last one)
+                    if kw_index < len(keywords) - 1:
+                        log_time("[反爬] 切换下一个关键词前，执行随机延迟...")
+                        await random_sleep(5, 10)
 
             except PlaywrightTimeoutError as e:
                 if _is_login_url(page.url):
