@@ -266,7 +266,16 @@ function handleSubmit() {
       </div>
       <div class="grid gap-2 sm:grid-cols-4 sm:items-center sm:gap-4">
         <Label for="keyword" class="sm:text-right">{{ t('tasks.form.keyword') }}</Label>
-        <Input id="keyword" v-model="form.keyword" class="sm:col-span-3" :placeholder="t('tasks.form.keywordPlaceholder')" required />
+        <div class="sm:col-span-3">
+          <Textarea
+            id="keyword"
+            v-model="form.keyword"
+            :placeholder="t('tasks.form.keywordPlaceholder')"
+            :rows="3"
+            required
+          />
+          <p class="mt-1 text-xs text-muted-foreground">{{ t('tasks.form.keywordHint') }}</p>
+        </div>
       </div>
       <div class="grid gap-2 sm:grid-cols-4 sm:items-center sm:gap-4">
         <Label class="sm:text-right">{{ t('tasks.form.decisionMode') }}</Label>

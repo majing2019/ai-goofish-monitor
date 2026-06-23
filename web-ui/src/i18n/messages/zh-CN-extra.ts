@@ -47,7 +47,8 @@ const zhCNExtra = {
       taskName: '任务名称',
       taskNamePlaceholder: '例如：索尼 A7M4 相机',
       keyword: '搜索关键词',
-      keywordPlaceholder: '例如：a7m4',
+      keywordPlaceholder: '每行一个关键词，例如：\nAI简历生成器\n找工作助手\n简历优化工具',
+      keywordHint: '支持多个关键词，每行一个或用逗号分隔。每个关键词将分别搜索，结果合并去重。',
       decisionMode: '判断模式',
       decisionModePlaceholder: '请选择判断模式',
       aiMode: 'AI判断',
@@ -106,7 +107,7 @@ const zhCNExtra = {
       publishOptions: { none: '不筛选（默认）', latest: '最新', oneDay: '1天内', threeDays: '3天内', sevenDays: '7天内', fourteenDays: '14天内' },
       validation: {
         incomplete: '信息不完整',
-        nameAndKeywordRequired: '任务名称和关键词不能为空。',
+        nameAndKeywordRequired: '任务名称和搜索关键词不能为空。',
         aiDescriptionRequired: 'AI 模式下详细需求不能为空。',
         keywordRuleIncomplete: '关键词规则不完整',
         keywordRuleRequired: '关键词模式下至少需要一个关键词。',

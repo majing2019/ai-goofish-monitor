@@ -46,8 +46,9 @@ const enUSExtra = {
     form: {
       taskName: 'Task Name',
       taskNamePlaceholder: 'Example: Sony A7M4 Camera',
-      keyword: 'Search Keyword',
-      keywordPlaceholder: 'Example: a7m4',
+      keyword: 'Search Keywords',
+      keywordPlaceholder: 'One keyword per line, e.g.:\nAI Resume Builder\nJob Search Assistant',
+      keywordHint: 'Supports multiple keywords (one per line or comma-separated). Each keyword is searched separately and results are merged.',
       decisionMode: 'Decision Mode',
       decisionModePlaceholder: 'Select a decision mode',
       aiMode: 'AI Decision',
@@ -106,7 +107,7 @@ const enUSExtra = {
       publishOptions: { none: 'No Filter (default)', latest: 'Latest', oneDay: 'Within 1 Day', threeDays: 'Within 3 Days', sevenDays: 'Within 7 Days', fourteenDays: 'Within 14 Days' },
       validation: {
         incomplete: 'Incomplete information',
-        nameAndKeywordRequired: 'Task name and keyword are required.',
+        nameAndKeywordRequired: 'Task name and search keyword(s) are required.',
         aiDescriptionRequired: 'Detailed requirement is required in AI mode.',
         keywordRuleIncomplete: 'Incomplete keyword rules',
         keywordRuleRequired: 'At least one keyword is required in keyword mode.',
