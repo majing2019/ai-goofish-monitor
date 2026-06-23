@@ -23,6 +23,29 @@ class TaskStatus(str, Enum):
     SCHEDULED = "scheduled"
 
 
+def parse_keywords(keyword: str) -> list[str]:
+    """Parse a keyword string into a list of individual keywords.
+
+    Supports newline or comma separation. Returns a deduplicated list.
+    Empty lines and whitespace-only entries are filtered out.
+    """
+    if not keyword or not keyword.strip():
+        return []
+    raw_values = re.split(r"[\n,]+", keyword)
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in raw_values:
+        text = str(item).strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result
+
+
 def _normalize_keyword_values(value) -> List[str]:
     if value is None:
         return []
@@ -140,6 +163,11 @@ class Task(BaseModel):
     @classmethod
     def normalize_keyword_rules(cls, value):
         return _normalize_keyword_values(value)
+
+    @property
+    def keywords(self) -> list[str]:
+        """Return the keyword field parsed as a list of individual keywords."""
+        return parse_keywords(self.keyword)
 
     def can_start(self) -> bool:
         """检查任务是否可以启动"""
