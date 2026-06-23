@@ -189,6 +189,10 @@ async def main():
     tasks = []
     for task_conf in active_task_configs:
         print(f"-> 任务 '{task_conf['task_name']}' 已加入执行队列。")
+        kw_raw = task_conf.get('keyword', '')
+        kw_list = normalize_keywords(kw_raw)
+        if len(kw_list) > 1:
+            print(f"   关键词: {', '.join(kw_list)}")
         tasks.append(asyncio.create_task(scrape_xianyu(task_config=task_conf, debug_limit=args.debug_limit)))
 
     async def _shutdown_watcher():
