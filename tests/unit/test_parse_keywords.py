@@ -41,7 +41,11 @@ class TestParseKeywords:
         assert parse_keywords("  \n  ") == []
 
     def test_chinese_comma(self):
-        """Regular commas work; Chinese commas (，) are NOT split by default."""
+        """Chinese fullwidth commas (，) are split just like ASCII commas."""
         result = parse_keywords("a7m4，sony")
-        # Chinese comma is not in the split pattern, so it stays as one token
-        assert result == ["a7m4，sony"]
+        assert result == ["a7m4", "sony"]
+
+    def test_chinese_dunhao(self):
+        """Chinese enumeration commas (、) are split."""
+        result = parse_keywords("a7m4、sony、canon")
+        assert result == ["a7m4", "sony", "canon"]

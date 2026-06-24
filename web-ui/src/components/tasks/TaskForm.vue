@@ -78,7 +78,7 @@ const accountStrategyOptions = computed(() => [
 
 function parseKeywordText(text: string): string[] {
   const values = String(text || '')
-    .split(/[\n,]+/)
+    .split(/[\n,，、]+/)
     .map((item) => item.trim())
     .filter((item) => item.length > 0)
 

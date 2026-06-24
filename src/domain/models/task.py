@@ -26,12 +26,13 @@ class TaskStatus(str, Enum):
 def parse_keywords(keyword: str) -> list[str]:
     """Parse a keyword string into a list of individual keywords.
 
-    Supports newline or comma separation. Returns a deduplicated list.
+    Supports newline, comma, Chinese fullwidth comma (，), and
+    Chinese enumeration comma (、) separation. Returns a deduplicated list.
     Empty lines and whitespace-only entries are filtered out.
     """
     if not keyword or not keyword.strip():
         return []
-    raw_values = re.split(r"[\n,]+", keyword)
+    raw_values = re.split(r"[\n,，、]+", keyword)
     seen: set[str] = set()
     result: list[str] = []
     for item in raw_values:
@@ -54,7 +55,7 @@ def _normalize_keyword_values(value) -> List[str]:
     if isinstance(value, (list, tuple, set)):
         raw_values = list(value)
     elif isinstance(value, str):
-        raw_values = re.split(r"[\n,]+", value)
+        raw_values = re.split(r"[\n,，、]+", value)
     else:
         raw_values = [value]
 
