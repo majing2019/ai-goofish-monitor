@@ -15,6 +15,3 @@ prompts/
 .serena/
 price_history/
 data/
-# Volar type-check artifacts
-*.vue.js
-web-ui/src/**/*.js
