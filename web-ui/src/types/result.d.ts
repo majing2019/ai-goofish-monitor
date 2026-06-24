@@ -34,6 +34,32 @@ export interface SellerInfo {
   "卖家收到的评价列表"?: any[]; // Define more strictly if needed
 }
 
+export interface ReplicationDimension {
+  status: 'PASS' | 'FAIL' | 'NEEDS_MANUAL_CHECK';
+  comment: string;
+  evidence?: string;
+}
+
+export interface ReplicationCostDimension extends ReplicationDimension {
+  one_time_effort?: string;
+  ai_cost_estimate?: string;
+}
+
+export interface ReplicationPricingDimension extends ReplicationDimension {
+  estimated_price?: string;
+  market_demand?: string;
+}
+
+export interface ReplicationAssessment {
+  is_replicable: boolean;
+  replication_reason: string;
+  replication_score: number;
+  feasibility: ReplicationDimension;
+  cost: ReplicationCostDimension;
+  pricing: ReplicationPricingDimension;
+  moat: ReplicationDimension;
+}
+
 export interface AiAnalysis {
   is_recommended: boolean;
   reason: string;
@@ -45,6 +71,7 @@ export interface AiAnalysis {
   risk_tags?: string[];
   criteria_analysis?: Record<string, any>;
   matched_keywords?: string[];
+  replication_assessment?: ReplicationAssessment;
   error?: string;
 }
 

@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/select'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
+import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 
 interface FileOption {
@@ -18,6 +19,8 @@ interface FileOption {
   taskName?: string
 }
 
+type SortBy = 'crawl_time' | 'publish_time' | 'price' | 'keyword_hit_count' | 'replication_score'
+
 interface Props {
   files: string[]
   fileOptions?: FileOption[]
@@ -25,10 +28,17 @@ interface Props {
   aiRecommendedOnly: boolean
   keywordRecommendedOnly: boolean
   includeHidden: boolean
-  sortBy: 'crawl_time' | 'publish_time' | 'price' | 'keyword_hit_count'
+  sortBy: SortBy
   sortOrder: 'asc' | 'desc'
   isLoading: boolean
   isReady: boolean
+  // F1: 成交量 & 发布时间筛选
+  minViewCount: number | null
+  minWantCount: number | null
+  publishWithinDays: number | null
+  // F2: 复刻可行性筛选
+  isReplicableOnly: boolean
+  minReplicationScore: number | null
 }
 
 const props = defineProps<Props>()
@@ -68,8 +78,13 @@ const emit = defineEmits<{
   (e: 'update:aiRecommendedOnly', value: boolean): void
   (e: 'update:keywordRecommendedOnly', value: boolean): void
   (e: 'update:includeHidden', value: boolean): void
-  (e: 'update:sortBy', value: 'crawl_time' | 'publish_time' | 'price' | 'keyword_hit_count'): void
+  (e: 'update:sortBy', value: SortBy): void
   (e: 'update:sortOrder', value: 'asc' | 'desc'): void
+  (e: 'update:minViewCount', value: number | null): void
+  (e: 'update:minWantCount', value: number | null): void
+  (e: 'update:publishWithinDays', value: number | null): void
+  (e: 'update:isReplicableOnly', value: boolean): void
+  (e: 'update:minReplicationScore', value: number | null): void
   (e: 'refresh'): void
   (e: 'export'): void
   (e: 'delete'): void
@@ -89,10 +104,26 @@ function handleToggleKeywordRecommended(value: boolean) {
     emit('update:aiRecommendedOnly', false)
   }
 }
+
+function handleMinViewCountInput(event: Event) {
+  const val = (event.target as HTMLInputElement).value
+  emit('update:minViewCount', val ? Number(val) : null)
+}
+
+function handleMinWantCountInput(event: Event) {
+  const val = (event.target as HTMLInputElement).value
+  emit('update:minWantCount', val ? Number(val) : null)
+}
+
+function handleMinReplicationScoreInput(event: Event) {
+  const val = (event.target as HTMLInputElement).value
+  emit('update:minReplicationScore', val ? Number(val) : null)
+}
 </script>
 
 <template>
   <div class="app-surface mb-6 p-4 sm:p-5">
+    <!-- Row 1: File select + Sort by + Sort order -->
     <div class="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)]">
       <div class="space-y-2">
         <Label class="text-xs font-semibold text-slate-500">{{ t('results.title') }}</Label>
@@ -117,7 +148,7 @@ function handleToggleKeywordRecommended(value: boolean) {
         <Label class="text-xs font-semibold text-slate-500">{{ t('results.filters.sortByCrawlTime') }}</Label>
         <Select
           :model-value="props.sortBy"
-          @update:model-value="(value) => emit('update:sortBy', value as any)"
+          @update:model-value="(value) => emit('update:sortBy', value as SortBy)"
         >
           <SelectTrigger class="w-full">
             <SelectValue />
@@ -127,6 +158,7 @@ function handleToggleKeywordRecommended(value: boolean) {
             <SelectItem value="publish_time">{{ t('results.filters.sortByPublishTime') }}</SelectItem>
             <SelectItem value="price">{{ t('results.filters.sortByPrice') }}</SelectItem>
             <SelectItem value="keyword_hit_count">{{ t('results.filters.sortByKeywordHits') }}</SelectItem>
+            <SelectItem value="replication_score">{{ t('results.filters.sortByReplicationScore') }}</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -148,6 +180,52 @@ function handleToggleKeywordRecommended(value: boolean) {
       </div>
     </div>
 
+    <!-- Row 2: F1 filters — Min Views / Min Wants / Publish Time -->
+    <div class="mt-4 grid gap-4 sm:grid-cols-3">
+      <div class="space-y-2">
+        <Label class="text-xs font-semibold text-slate-500">{{ t('results.filters.minViewCount') }}</Label>
+        <Input
+          type="number"
+          min="0"
+          :placeholder="t('results.filters.minViewCountPlaceholder')"
+          :model-value="props.minViewCount ?? ''"
+          @input="handleMinViewCountInput"
+        />
+      </div>
+
+      <div class="space-y-2">
+        <Label class="text-xs font-semibold text-slate-500">{{ t('results.filters.minWantCount') }}</Label>
+        <Input
+          type="number"
+          min="0"
+          :placeholder="t('results.filters.minWantCountPlaceholder')"
+          :model-value="props.minWantCount ?? ''"
+          @input="handleMinWantCountInput"
+        />
+      </div>
+
+      <div class="space-y-2">
+        <Label class="text-xs font-semibold text-slate-500">{{ t('results.filters.publishTime') }}</Label>
+        <Select
+          :model-value="props.publishWithinDays === null ? 'all' : String(props.publishWithinDays)"
+          @update:model-value="(value) => emit('update:publishWithinDays', value === 'all' ? null : Number(value))"
+        >
+          <SelectTrigger class="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">{{ t('results.filters.publishAll') }}</SelectItem>
+            <SelectItem value="1">{{ t('results.filters.publish1Day') }}</SelectItem>
+            <SelectItem value="3">{{ t('results.filters.publish3Days') }}</SelectItem>
+            <SelectItem value="7">{{ t('results.filters.publish7Days') }}</SelectItem>
+            <SelectItem value="30">{{ t('results.filters.publish30Days') }}</SelectItem>
+            <SelectItem value="90">{{ t('results.filters.publish90Days') }}</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+    </div>
+
+    <!-- Row 3: Checkboxes + F2 replication filters + Action buttons -->
     <div class="mt-4 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
       <div class="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
         <div class="flex items-center space-x-2">
@@ -175,6 +253,31 @@ function handleToggleKeywordRecommended(value: boolean) {
             @update:modelValue="(value) => emit('update:includeHidden', value === true)"
           />
           <Label for="include-hidden" class="cursor-pointer">{{ t('results.filters.includeHidden') }}</Label>
+        </div>
+
+        <!-- F2: Replicable Only checkbox -->
+        <div class="flex items-center space-x-2">
+          <Checkbox
+            id="replicable-only"
+            :model-value="props.isReplicableOnly"
+            @update:modelValue="(value) => emit('update:isReplicableOnly', value === true)"
+          />
+          <Label for="replicable-only" class="cursor-pointer">{{ t('results.filters.replicableOnly') }}</Label>
+        </div>
+
+        <!-- F2: Min Replication Score -->
+        <div class="flex items-center gap-2">
+          <Label for="min-replication-score" class="whitespace-nowrap text-sm">{{ t('results.filters.minReplicationScore') }}</Label>
+          <Input
+            id="min-replication-score"
+            type="number"
+            min="0"
+            max="100"
+            class="w-20"
+            :placeholder="t('results.filters.minReplicationScorePlaceholder')"
+            :model-value="props.minReplicationScore ?? ''"
+            @input="handleMinReplicationScoreInput"
+          />
         </div>
       </div>
 

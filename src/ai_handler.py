@@ -273,6 +273,21 @@ def validate_ai_response_format(parsed_response):
         safe_print("   [AI分析] 警告：risk_tags字段不是列表类型")
         return False
 
+    # 验证可选的 replication_assessment 字段
+    replication = parsed_response.get("replication_assessment")
+    if replication is not None:
+        if not isinstance(replication, dict):
+            safe_print("   [AI分析] 警告：replication_assessment必须为字典类型")
+            return False
+        for required_key in ("is_replicable", "replication_reason", "replication_score",
+                              "feasibility", "cost", "pricing", "moat"):
+            if required_key not in replication:
+                safe_print(f"   [AI分析] 警告：replication_assessment缺少必需字段 '{required_key}'")
+                return False
+        if not isinstance(replication.get("is_replicable"), bool):
+            safe_print("   [AI分析] 警告：replication_assessment.is_replicable不是布尔类型")
+            return False
+
     return True
 
 

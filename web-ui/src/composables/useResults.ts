@@ -37,6 +37,13 @@ export function useResults() {
       include_hidden: false,
       sort_by: 'crawl_time',
       sort_order: 'desc',
+      // F1: 成交量 & 发布时间筛选
+      min_view_count: null,
+      min_want_count: null,
+      publish_within_days: null,
+      // F2: 复刻可行性筛选
+      is_replicable_only: false,
+      min_replication_score: null,
     }
     try {
       const saved = localStorage.getItem(STORAGE_KEY_FILTERS)

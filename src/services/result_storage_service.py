@@ -23,6 +23,7 @@ SORT_COLUMN_MAP = {
     "publish_time": "COALESCE(publish_time, '')",
     "price": "COALESCE(price, 0)",
     "keyword_hit_count": "keyword_hit_count",
+    "replication_score": "replication_score",
 }
 
 
@@ -52,6 +53,7 @@ def _build_query_conditions(
     filename: str,
     ai_recommended_only: bool,
     keyword_recommended_only: bool,
+    publish_within_days: int | None = None,
 ) -> tuple[str, list]:
     conditions = ["result_filename = ?"]
     params: list = [filename]
@@ -63,7 +65,18 @@ def _build_query_conditions(
         conditions.append("is_recommended = 1")
         conditions.append("analysis_source = ?")
         params.append("keyword")
+    if publish_within_days is not None and publish_within_days > 0:
+        conditions.append("publish_time IS NOT NULL AND publish_time != ''")
+        conditions.append("publish_time >= ?")
+        params.append(_days_ago_iso(publish_within_days))
     return " AND ".join(conditions), params
+
+
+def _days_ago_iso(days: int) -> str:
+    """Return an ISO date string for *days* ago (YYYY-MM-DD)."""
+    from datetime import timedelta
+
+    return (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
 
 def _sort_expression(sort_by: str, sort_order: str) -> str:
@@ -111,6 +124,64 @@ def _is_record_visible(record: dict) -> bool:
     return record.get("_effective_hidden") is not True
 
 
+def _parse_int_field(value: str | int | None) -> int | None:
+    """Try to parse a numeric field that may be a string with Chinese suffixes."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    s = str(value).strip()
+    if not s:
+        return None
+    # Handle "万" suffix: e.g. "1.2万" → 12000
+    if "万" in s:
+        try:
+            return int(float(s.replace("万", "")) * 10000)
+        except (ValueError, TypeError):
+            return None
+    # Strip non-digit characters
+    cleaned = "".join(ch for ch in s if ch.isdigit())
+    if not cleaned:
+        return None
+    return int(cleaned)
+
+
+def _passes_count_filters(
+    product: dict,
+    min_view_count: int | None,
+    min_want_count: int | None,
+) -> bool:
+    """Check if a product passes min view/want count filters."""
+    if min_view_count is not None:
+        views = _parse_int_field(product.get("浏览量"))
+        if views is None or views < min_view_count:
+            return False
+    if min_want_count is not None:
+        wants = _parse_int_field(product.get("“想要”人数"))
+        if wants is None or wants < min_want_count:
+            return False
+    return True
+
+
+def _passes_replication_filters(
+    ai_analysis: dict | None,
+    is_replicable_only: bool,
+    min_replication_score: int | None,
+) -> bool:
+    """Check if a record passes replication assessment filters."""
+    if not is_replicable_only and min_replication_score is None:
+        return True
+    analysis = ai_analysis or {}
+    replication = analysis.get("replication_assessment") or {}
+    if is_replicable_only and not replication.get("is_replicable"):
+        return False
+    if min_replication_score is not None:
+        score = replication.get("replication_score")
+        if score is None or int(score) < min_replication_score:
+            return False
+    return True
+
+
 def _load_filtered_records_from_conn(
     conn,
     *,
@@ -120,13 +191,23 @@ def _load_filtered_records_from_conn(
     sort_by: str,
     sort_order: str,
     include_hidden: bool,
+    publish_within_days: int | None = None,
+    min_view_count: int | None = None,
+    min_want_count: int | None = None,
+    is_replicable_only: bool = False,
+    min_replication_score: int | None = None,
 ) -> list[dict]:
     where_clause, params = _build_query_conditions(
         filename=filename,
         ai_recommended_only=ai_recommended_only,
         keyword_recommended_only=keyword_recommended_only,
+        publish_within_days=publish_within_days,
     )
     order_clause = _sort_expression(sort_by, sort_order)
+    # replication_score is inside raw_json — must sort in Python
+    use_python_sort = sort_by == "replication_score"
+    if use_python_sort:
+        order_clause = _sort_expression("crawl_time", sort_order)
     rows = conn.execute(
         f"""
         SELECT raw_json, status
@@ -143,7 +224,27 @@ def _load_filtered_records_from_conn(
         record = _parse_raw_record(str(row["raw_json"]), status=row["status"])
         decorated = _decorate_record_visibility(record, row["status"], blacklist_keywords)
         if include_hidden or _is_record_visible(decorated):
+            # Post-processing filters on raw_json fields
+            product = decorated.get("商品信息", {}) or {}
+            if not _passes_count_filters(product, min_view_count, min_want_count):
+                continue
+            # Post-processing filters on replication assessment
+            if not _passes_replication_filters(
+                decorated.get("ai_analysis"), is_replicable_only, min_replication_score
+            ):
+                continue
             records.append(decorated)
+    if use_python_sort:
+        reverse = sort_order == "desc"
+        records.sort(
+            key=lambda r: (
+                r.get("_effective_hidden", False),
+                -(
+                    int((r.get("ai_analysis") or {}).get("replication_assessment", {}).get("replication_score", 0))
+                ),
+            ),
+            reverse=reverse,
+        )
     return records
 
 
@@ -263,6 +364,11 @@ async def query_result_records(
     page: int,
     limit: int,
     include_hidden: bool = False,
+    publish_within_days: int | None = None,
+    min_view_count: int | None = None,
+    min_want_count: int | None = None,
+    is_replicable_only: bool = False,
+    min_replication_score: int | None = None,
 ) -> tuple[int, list[dict]]:
     return await asyncio.to_thread(
         _query_result_records_sync,
@@ -274,6 +380,11 @@ async def query_result_records(
         page,
         limit,
         include_hidden,
+        publish_within_days,
+        min_view_count,
+        min_want_count,
+        is_replicable_only,
+        min_replication_score,
     )
 
 
@@ -286,6 +397,11 @@ def _query_result_records_sync(
     page: int,
     limit: int,
     include_hidden: bool,
+    publish_within_days: int | None = None,
+    min_view_count: int | None = None,
+    min_want_count: int | None = None,
+    is_replicable_only: bool = False,
+    min_replication_score: int | None = None,
 ) -> tuple[int, list[dict]]:
     bootstrap_sqlite_storage()
     offset = max(page - 1, 0) * limit
@@ -298,6 +414,11 @@ def _query_result_records_sync(
             sort_by=sort_by,
             sort_order=sort_order,
             include_hidden=include_hidden,
+            publish_within_days=publish_within_days,
+            min_view_count=min_view_count,
+            min_want_count=min_want_count,
+            is_replicable_only=is_replicable_only,
+            min_replication_score=min_replication_score,
         )
     total = len(records)
     return total, records[offset: offset + limit]
@@ -311,6 +432,11 @@ async def load_all_result_records(
     sort_by: str,
     sort_order: str,
     include_hidden: bool = False,
+    publish_within_days: int | None = None,
+    min_view_count: int | None = None,
+    min_want_count: int | None = None,
+    is_replicable_only: bool = False,
+    min_replication_score: int | None = None,
 ) -> list[dict]:
     return await asyncio.to_thread(
         _load_all_result_records_sync,
@@ -320,6 +446,11 @@ async def load_all_result_records(
         sort_by,
         sort_order,
         include_hidden,
+        publish_within_days,
+        min_view_count,
+        min_want_count,
+        is_replicable_only,
+        min_replication_score,
     )
 
 
@@ -330,6 +461,11 @@ def _load_all_result_records_sync(
     sort_by: str,
     sort_order: str,
     include_hidden: bool,
+    publish_within_days: int | None = None,
+    min_view_count: int | None = None,
+    min_want_count: int | None = None,
+    is_replicable_only: bool = False,
+    min_replication_score: int | None = None,
 ) -> list[dict]:
     bootstrap_sqlite_storage()
     with sqlite_connection() as conn:
@@ -341,6 +477,11 @@ def _load_all_result_records_sync(
             sort_by=sort_by,
             sort_order=sort_order,
             include_hidden=include_hidden,
+            publish_within_days=publish_within_days,
+            min_view_count=min_view_count,
+            min_want_count=min_want_count,
+            is_replicable_only=is_replicable_only,
+            min_replication_score=min_replication_score,
         )
 
 

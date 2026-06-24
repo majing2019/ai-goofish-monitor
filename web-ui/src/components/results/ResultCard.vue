@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { ResultItem } from '@/types/result.d.ts'
+import type { ResultItem, ReplicationAssessment } from '@/types/result.d.ts'
 import {
   Card,
   CardContent,
@@ -10,7 +10,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import Badge from '@/components/ui/badge/Badge.vue'
-import { ExternalLink, TrendingUp, TrendingDown, Info, User, Clock, CheckCircle2, XCircle, AlertCircle, EyeOff, Eye } from 'lucide-vue-next'
+import { ExternalLink, TrendingUp, TrendingDown, Info, User, Clock, CheckCircle2, XCircle, AlertCircle, EyeOff, Eye, Copy, ChevronDown, ChevronUp } from 'lucide-vue-next'
 import { formatDateTime } from '@/i18n'
 
 interface Props {
@@ -50,6 +50,19 @@ const hiddenLabel = computed(() => {
 })
 
 const expanded = ref(false)
+const replicationExpanded = ref(false)
+
+// F2: Replication assessment
+const replication = ai?.replication_assessment as ReplicationAssessment | undefined
+const isReplicable = computed(() => replication?.is_replicable === true)
+const replicationScore = computed(() => replication?.replication_score ?? 0)
+
+function dimStatusColor(status: string | undefined): string {
+  if (!status) return 'text-slate-400'
+  if (status === 'PASS') return 'text-emerald-600'
+  if (status === 'FAIL') return 'text-rose-600'
+  return 'text-amber-600'
+}
 </script>
 
 <template>
@@ -72,6 +85,10 @@ const expanded = ref(false)
       <div class="absolute top-3 left-3 flex gap-2">
         <Badge v-if="isRecommended && !isHidden" variant="default" class="bg-emerald-500/90 backdrop-blur-md border-none shadow-sm">
           {{ t('results.card.curated') }}
+        </Badge>
+        <Badge v-if="isReplicable && !isHidden" variant="default" class="bg-teal-500/90 backdrop-blur-md border-none shadow-sm" :title="replication?.replication_reason">
+          <Copy class="w-3 h-3 mr-1" />
+          {{ t('results.card.replicable') }} {{ replicationScore }}
         </Badge>
         <Badge v-if="isRuleHidden" variant="secondary" class="bg-slate-900/75 text-white border-none backdrop-blur-md shadow-sm">
           {{ t('results.card.blacklisted') }}
@@ -167,6 +184,46 @@ const expanded = ref(false)
           </div>
           <div class="text-sm font-bold text-slate-700">
             {{ priceInsight.min_price ? `¥${priceInsight.min_price}` : '—' }}
+          </div>
+        </div>
+      </div>
+
+      <!-- F2: Replication Assessment Panel -->
+      <div v-if="replication" class="mt-4 rounded-xl border border-teal-100 bg-teal-50/30">
+        <button
+          type="button"
+          @click="replicationExpanded = !replicationExpanded"
+          class="w-full flex items-center justify-between px-3 py-2.5 text-sm font-bold text-teal-700 hover:bg-teal-50/60 transition-colors rounded-xl"
+        >
+          <span class="flex items-center gap-1.5">
+            <Copy class="w-3.5 h-3.5" />
+            {{ t('results.card.replicationDetail') }}
+          </span>
+          <component :is="replicationExpanded ? ChevronUp : ChevronDown" class="w-4 h-4" />
+        </button>
+        <div v-if="replicationExpanded" class="px-3 pb-3 space-y-2">
+          <p class="text-xs leading-relaxed text-slate-600">{{ replication.replication_reason }}</p>
+          <div class="grid grid-cols-2 gap-2">
+            <div class="bg-white/60 p-2 rounded-lg border border-slate-100/50">
+              <div class="text-[10px] font-medium text-slate-400 mb-0.5">{{ t('results.card.feasibility') }}</div>
+              <div class="text-xs font-bold" :class="dimStatusColor(replication.feasibility?.status)">{{ replication.feasibility?.status }}</div>
+              <div class="text-[10px] text-slate-500 mt-0.5 line-clamp-2">{{ replication.feasibility?.comment }}</div>
+            </div>
+            <div class="bg-white/60 p-2 rounded-lg border border-slate-100/50">
+              <div class="text-[10px] font-medium text-slate-400 mb-0.5">{{ t('results.card.cost') }}</div>
+              <div class="text-xs font-bold" :class="dimStatusColor(replication.cost?.status)">{{ replication.cost?.status }}</div>
+              <div class="text-[10px] text-slate-500 mt-0.5 line-clamp-2">{{ replication.cost?.comment }}</div>
+            </div>
+            <div class="bg-white/60 p-2 rounded-lg border border-slate-100/50">
+              <div class="text-[10px] font-medium text-slate-400 mb-0.5">{{ t('results.card.pricing') }}</div>
+              <div class="text-xs font-bold" :class="dimStatusColor(replication.pricing?.status)">{{ replication.pricing?.status }}</div>
+              <div class="text-[10px] text-slate-500 mt-0.5 line-clamp-2">{{ replication.pricing?.comment }}</div>
+            </div>
+            <div class="bg-white/60 p-2 rounded-lg border border-slate-100/50">
+              <div class="text-[10px] font-medium text-slate-400 mb-0.5">{{ t('results.card.moat') }}</div>
+              <div class="text-xs font-bold" :class="dimStatusColor(replication.moat?.status)">{{ replication.moat?.status }}</div>
+              <div class="text-[10px] text-slate-500 mt-0.5 line-clamp-2">{{ replication.moat?.comment }}</div>
+            </div>
           </div>
         </div>
       </div>

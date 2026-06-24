@@ -90,6 +90,13 @@ async def get_result_file_content(
     include_hidden: bool = Query(False),
     sort_by: str = Query("crawl_time"),
     sort_order: str = Query("desc"),
+    # F1: 成交量 & 发布时间筛选
+    min_view_count: int | None = Query(None, ge=0),
+    min_want_count: int | None = Query(None, ge=0),
+    publish_within_days: int | None = Query(None, ge=1),
+    # F2: 复刻可行性筛选
+    is_replicable_only: bool = Query(False),
+    min_replication_score: int | None = Query(None, ge=0, le=100),
 ):
     """读取指定的 .jsonl 文件内容，支持分页、筛选和排序"""
     if ai_recommended_only and keyword_recommended_only:
@@ -109,6 +116,11 @@ async def get_result_file_content(
             page=page,
             limit=limit,
             include_hidden=include_hidden,
+            publish_within_days=publish_within_days,
+            min_view_count=min_view_count,
+            min_want_count=min_want_count,
+            is_replicable_only=is_replicable_only,
+            min_replication_score=min_replication_score,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -146,6 +158,13 @@ async def export_result_file_content(
     include_hidden: bool = Query(False),
     sort_by: str = Query("crawl_time"),
     sort_order: str = Query("desc"),
+    # F1: 成交量 & 发布时间筛选
+    min_view_count: int | None = Query(None, ge=0),
+    min_want_count: int | None = Query(None, ge=0),
+    publish_within_days: int | None = Query(None, ge=1),
+    # F2: 复刻可行性筛选
+    is_replicable_only: bool = Query(False),
+    min_replication_score: int | None = Query(None, ge=0, le=100),
 ):
     if ai_recommended_only and keyword_recommended_only:
         raise HTTPException(status_code=400, detail="AI推荐筛选与关键词推荐筛选不能同时开启。")
@@ -161,6 +180,11 @@ async def export_result_file_content(
             sort_by=sort_by,
             sort_order=sort_order,
             include_hidden=include_hidden,
+            publish_within_days=publish_within_days,
+            min_view_count=min_view_count,
+            min_want_count=min_want_count,
+            is_replicable_only=is_replicable_only,
+            min_replication_score=min_replication_score,
         )
         csv_text = build_results_csv(
             enrich_records_with_price_insight(results, filename)

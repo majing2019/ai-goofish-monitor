@@ -6,10 +6,17 @@ export interface GetResultContentParams {
   ai_recommended_only?: boolean;
   keyword_recommended_only?: boolean;
   include_hidden?: boolean;
-  sort_by?: 'crawl_time' | 'publish_time' | 'price' | 'keyword_hit_count';
+  sort_by?: 'crawl_time' | 'publish_time' | 'price' | 'keyword_hit_count' | 'replication_score';
   sort_order?: 'asc' | 'desc';
   page?: number;
   limit?: number;
+  // F1: 成交量 & 发布时间筛选
+  min_view_count?: number | null;
+  min_want_count?: number | null;
+  publish_within_days?: number | null;
+  // F2: 复刻可行性筛选
+  is_replicable_only?: boolean;
+  min_replication_score?: number | null;
 }
 
 export async function getResultFiles(): Promise<string[]> {
