@@ -154,6 +154,13 @@ export function useResults() {
       tasks.forEach((task) => {
         if (task.keyword) {
           mapping[normalizeKeyword(task.keyword)] = task.task_name
+          // Also map each individual keyword so multi-keyword tasks
+          // (e.g. "MacBook,iPad") resolve correctly when the result
+          // filename is built from a single keyword ("MacBook_full_data.jsonl").
+          const individualKeywords = task.keyword.split(/[\n,，、]+/).map(k => k.trim()).filter(Boolean)
+          individualKeywords.forEach(kw => {
+            mapping[normalizeKeyword(kw)] = task.task_name
+          })
         }
       })
       taskNameByKeyword.value = mapping
